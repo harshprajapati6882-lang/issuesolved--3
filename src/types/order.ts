@@ -28,6 +28,7 @@ export interface OrderConfig {
   peakHoursBoost: boolean;
   quickPreset: QuickPatternPreset | null;
   delivery: DeliveryOption;
+  minViewsPerRun: number; // 🔥 NEW: Dynamic minimum views per run
 }
 
 export interface RunStep {
@@ -58,7 +59,6 @@ export interface PatternPlan {
 
 export type OrderStatus = "running" | "paused" | "cancelled" | "completed" | "processing" | "failed";
 
-// 🔥 UPDATED: Extended run status to include "retrying"
 export type RunStatus = "pending" | "completed" | "cancelled" | "retrying";
 
 export interface ApiService {
@@ -93,7 +93,6 @@ export interface Bundle {
   };
 }
 
-// 🔥 NEW: Backend run info (from /api/order/runs endpoint)
 export interface BackendRunInfo {
   id: string;
   label: string;
@@ -135,14 +134,12 @@ export interface CreatedOrder {
   selectedBundle: string;
   status: OrderStatus;
   completedRuns: number;
-  // 🔥 UPDATED: Extended run tracking
   runStatuses: RunStatus[];
   runErrors?: string[];
-  runRetries?: number[];           // 🔥 NEW: Retry count per run
-  runOriginalTimes?: string[];     // 🔥 NEW: Original scheduled times
-  runCurrentTimes?: string[];      // 🔥 NEW: Current scheduled times (may differ if rescheduled)
-  runReasons?: string[];           // 🔥 NEW: Retry reasons
-  // Other fields
+  runRetries?: number[];
+  runOriginalTimes?: string[];
+  runCurrentTimes?: string[];
+  runReasons?: string[];
   errorMessage?: string;
   createdAt: string;
   lastUpdatedAt?: string;
