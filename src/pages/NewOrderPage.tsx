@@ -112,6 +112,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
     fetchMinViews();
   }, []);
 
+  // 🔥 UPDATED: Config now includes minViewsPerRun
   const config: OrderConfig = useMemo(
     () => ({
       postUrl,
@@ -129,6 +130,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
           : delivery.mode === "auto"
             ? { ...delivery, hours: Math.max(6, Math.min(48, delivery.hours)) }
             : delivery,
+      minViewsPerRun, // 🔥 NEW: Pass to pattern generator
     }),
     [
       postUrl,
@@ -142,6 +144,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
       quickPreset,
       delivery,
       customHours,
+      minViewsPerRun, // 🔥 NEW: Dependency
     ]
   );
 
@@ -250,21 +253,20 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
     setExpandedRuns(false);
   };
 
-  // 🔥 NEW: Update min views on backend
-  const handleMinViewsChange = async (value: number) => {
+  // 🔥 NEW: Handle min views change - regenerate pattern when changed
+  const handleMinViewsChange = (value: number) => {
     const newValue = Math.max(1, Math.floor(value));
     setMinViewsPerRun(newValue);
+    setUseClonedPlan(false);
+    setSeed((current) => current + 1); // 🔥 Force regenerate pattern
 
-    try {
-      const backendUrl = import.meta.env.VITE_BACKEND_URL || "https://backend-y30y.onrender.com";
-      await fetch(`${backendUrl}/api/settings/min-views`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ minViewsPerRun: newValue }),
-      });
-    } catch (error) {
-      console.warn("Could not update min views setting on backend");
-    }
+    // Also update backend
+    const backendUrl = import.meta.env.VITE_BACKEND_URL || "https://backend-y30y.onrender.com";
+    fetch(`${backendUrl}/api/settings/min-views`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ minViewsPerRun: newValue }),
+    }).catch(() => console.warn("Could not update min views setting on backend"));
   };
 
   const deliveryOptions: DeliveryOption[] = [
@@ -275,6 +277,10 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
     { mode: "preset", label: "48h", hours: 48 },
     { mode: "custom", label: "Custom", hours: customHours },
   ];
+
+  // 🔥 Calculate estimated runs and views per run for display
+  const estimatedRunCount = safePlan.runs.length;
+  const averageViewsPerRun = estimatedRunCount > 0 ? Math.round(totalViews / estimatedRunCount) : 0;
 
   return (
     <div className="mx-auto max-w-7xl space-y-2 px-3 py-3">
@@ -386,7 +392,8 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
               <span>⚙️</span> Global Run Settings
             </h3>
             
-            <div className="space-y-2">
+            <div className="space-y-3">
+              {/* Min Views Input */}
               <div className="flex items-center justify-between gap-3">
                 <label className="text-[10px] text-gray-400">Minimum Views Per Run</label>
                 <div className="flex items-center gap-2">
@@ -401,16 +408,10 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
                   <span className="text-[9px] text-gray-500">views/run</span>
                 </div>
               </div>
-              
-              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-2 py-1.5">
-                <p className="text-[9px] text-blue-300/80 leading-relaxed">
-                  ℹ️ All runs will have minimum <strong>{minViewsPerRun}</strong> views. Pattern generator and backend both enforce this limit.
-                </p>
-              </div>
 
               {/* Quick presets for min views */}
               <div className="flex gap-1 flex-wrap">
-                {[50, 100, 200, 500, 1000].map((preset) => (
+                {[100, 200, 300, 500, 1000].map((preset) => (
                   <button
                     key={preset}
                     type="button"
@@ -425,6 +426,26 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
                   </button>
                 ))}
               </div>
+
+              {/* Live calculation display */}
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-2 py-2">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className="text-gray-400">Estimated Runs:</span>
+                  <span className="text-blue-300 font-semibold">{estimatedRunCount}</span>
+                </div>
+                <div className="flex items-center justify-between text-[10px] mt-1">
+                  <span className="text-gray-400">Avg Views/Run:</span>
+                  <span className="text-blue-300 font-semibold">{averageViewsPerRun.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center justify-between text-[10px] mt-1">
+                  <span className="text-gray-400">Max Possible Runs:</span>
+                  <span className="text-gray-500">{Math.floor(totalViews / minViewsPerRun)}</span>
+                </div>
+              </div>
+
+              <p className="text-[9px] text-blue-300/60 leading-relaxed">
+                ℹ️ Higher minimum = fewer runs with more views each. Lower minimum = more runs with fewer views each.
+              </p>
             </div>
           </div>
 
@@ -448,6 +469,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
             </div>
             <div className="flex items-center gap-3">
               <span className="text-[10px] text-gray-500">{safePlan.estimatedDurationHours}h duration</span>
+              <span className="text-[10px] text-gray-500">{estimatedRunCount} runs</span>
               <span className={`rounded-md border px-2 py-0.5 text-xs font-semibold ${
                 safePlan.risk === "Safe"
                   ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
@@ -696,7 +718,11 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
         <div className="flex items-center gap-2">
           {createError && <span className="text-[10px] text-red-400">❌ {createError}</span>}
           {createSuccess && <span className="text-[10px] text-emerald-400">✅ {createSuccess}</span>}
-          {!createError && !createSuccess && <span className="text-[10px] text-gray-500">Ready to deploy mission</span>}
+          {!createError && !createSuccess && (
+            <span className="text-[10px] text-gray-500">
+              Ready to deploy • {estimatedRunCount} runs • ~{averageViewsPerRun} views/run
+            </span>
+          )}
         </div>
         <button
           type="button"
