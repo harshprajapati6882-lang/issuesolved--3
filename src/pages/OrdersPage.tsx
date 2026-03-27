@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState, useRef } from "react"; // Add useRef
+import { useEffect, useMemo, useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { CreatedOrder } from "../types/order";
 import { OrderCard } from "../components/OrderCard";
-import { RunTable } from "../components/RunTable"; // 🔥 NEW: Import RunTable
+import { RunTable } from "../components/RunTable";
+import { fetchOrderStatus } from "../utils/api"; // 🔥 NEW: Import fetch function
 
 interface OrdersPageProps {
   orders: CreatedOrder[];
@@ -11,12 +12,12 @@ interface OrdersPageProps {
   onControlOrder: (order: CreatedOrder, action: "pause" | "resume" | "cancel") => void;
   onCloneOrder: (order: CreatedOrder) => void;
   onDismissNotice: () => void;
+  onUpdateOrder: (updatedOrder: CreatedOrder) => void; // 🔥 NEW: Callback to update order in parent
 }
 
 type TabType = "running" | "completed" | "scheduled" | "cancelled";
 type ViewMode = "rows" | "columns";
 
-// Grouped order type for batch orders
 interface GroupedOrder {
   id: string;
   batchId: string | null;
@@ -28,7 +29,6 @@ interface GroupedOrder {
   createdAt: string;
 }
 
-// Batman Status Colors
 const STATUS_COLORS: Record<string, { bg: string; text: string; dot: string }> = {
   running: { bg: "bg-yellow-500/15", text: "text-yellow-300", dot: "bg-yellow-400" },
   processing: { bg: "bg-yellow-500/15", text: "text-yellow-300", dot: "bg-yellow-400" },
@@ -47,6 +47,9 @@ const TABS: { key: TabType; label: string; icon: string }[] = [
   { key: "cancelled", label: "Cancelled", icon: "❌" },
 ];
 
+// 🔥 NEW: Polling interval (15 seconds)
+const POLLING_INTERVAL = 15000;
+
 export function OrdersPage({
   orders,
   notice,
@@ -54,18 +57,83 @@ export function OrdersPage({
   onControlOrder,
   onCloneOrder,
   onDismissNotice,
+  onUpdateOrder, // 🔥 NEW
 }: OrdersPageProps) {
   const [query, setQuery] = useState("");
   const [viewMode, setViewMode] = useState<ViewMode>("rows");
   const [activeTab, setActiveTab] = useState<TabType>("running");
-  // 🔥 FIXED: Use key to preserve popup across re-renders
   const [openedGroupId, setOpenedGroupId] = useState<string | null>(null);
   const openedGroupIdRef = useRef<string | null>(null);
+  const [lastPolled, setLastPolled] = useState<number>(Date.now()); // 🔥 NEW: Track last poll time
 
-  // Sync ref with state
   useEffect(() => {
     openedGroupIdRef.current = openedGroupId;
   }, [openedGroupId]);
+
+  // 🔥 NEW: Polling effect - fetches run statuses from backend
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout | null = null;
+
+    async function pollOrderStatuses() {
+      // Only poll active and scheduled orders (not completed/cancelled)
+      const ordersToCheck = orders.filter(order => {
+        const status = getRealStatus(order);
+        return status === "running" || status === "processing" || status === "scheduled" || status === "pending";
+      });
+
+      if (ordersToCheck.length === 0) return;
+
+      console.log(`[Polling] Checking ${ordersToCheck.length} active orders...`);
+
+      for (const order of ordersToCheck) {
+        if (!order.schedulerOrderId) continue;
+
+        try {
+          const statusData = await fetchOrderStatus(order.schedulerOrderId);
+          
+          // Check if status or run statuses changed
+          const statusChanged = statusData.status !== order.status;
+          const completedRunsChanged = statusData.completedRuns !== order.completedRuns;
+          const runStatusesChanged = JSON.stringify(statusData.runStatuses) !== JSON.stringify(order.runStatuses);
+
+          if (statusChanged || completedRunsChanged || runStatusesChanged) {
+            console.log(`[Polling] Update detected for order ${order.id}:`, {
+              oldStatus: order.status,
+              newStatus: statusData.status,
+              oldCompleted: order.completedRuns,
+              newCompleted: statusData.completedRuns,
+            });
+
+            // Update the order with new data
+            const updatedOrder: CreatedOrder = {
+              ...order,
+              status: statusData.status as any,
+              completedRuns: statusData.completedRuns,
+              runStatuses: statusData.runStatuses as any[],
+              lastUpdatedAt: statusData.lastUpdatedAt,
+            };
+
+            onUpdateOrder(updatedOrder);
+          }
+        } catch (error) {
+          console.error(`[Polling] Failed to fetch status for order ${order.schedulerOrderId}:`, error);
+        }
+      }
+
+      setLastPolled(Date.now());
+    }
+
+    // Initial poll after 5 seconds
+    const initialTimeout = setTimeout(pollOrderStatuses, 5000);
+
+    // Then poll every 15 seconds
+    intervalId = setInterval(pollOrderStatuses, POLLING_INTERVAL);
+
+    return () => {
+      clearTimeout(initialTimeout);
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [orders, onUpdateOrder]);
 
   function getProgress(order: CreatedOrder) {
     const safeRuns = order.runs || [];
@@ -192,7 +260,6 @@ export function OrdersPage({
     return "in <1m";
   }
 
-  // Group orders by batchId
   const groupedOrders = useMemo(() => {
     const groups: Map<string, GroupedOrder> = new Map();
     
@@ -491,15 +558,13 @@ export function OrdersPage({
     );
   }
 
-  // 🔥 UPDATED: Individual Link Card for Batch Orders Popup - NOW WITH RUN LIST
   function IndividualLinkCard({ order, index }: { order: CreatedOrder; index: number }) {
-    const [showRuns, setShowRuns] = useState(false); // 🔥 NEW: State for run list toggle
+    const [showRuns, setShowRuns] = useState(false);
     const progress = getProgress(order);
     const status = getRealStatus(order);
     const isControlling = controllingOrderId === order.id;
     const isCancelled = status === "cancelled" || status === "failed";
 
-    // 🔥 NEW: Get run data
     const safeRuns = order.runs || [];
     const safeRunStatuses = order.runStatuses || [];
     const safeRunErrors = order.runErrors || [];
@@ -513,7 +578,6 @@ export function OrdersPage({
           isCancelled ? 'border-red-500/30' : 'border-gray-800'
         }`}
       >
-        {/* Header */}
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
@@ -537,7 +601,6 @@ export function OrdersPage({
               </a>
             </div>
             <p className="mt-1 ml-8 text-[10px] text-gray-600 font-mono">{order.id}</p>
-            {/* 🔥 NEW: Show schedulerOrderId */}
             {order.schedulerOrderId && (
               <p className="ml-8 text-[9px] text-gray-700 font-mono">
                 Scheduler: {order.schedulerOrderId}
@@ -547,14 +610,12 @@ export function OrdersPage({
           <StatusBadge status={status} />
         </div>
 
-        {/* Error Message (if failed/cancelled) */}
         {order.errorMessage && (
           <div className="mt-2 ml-8 rounded-md bg-red-500/10 border border-red-500/20 px-2 py-1">
             <p className="text-[10px] text-red-400">❌ {order.errorMessage}</p>
           </div>
         )}
 
-        {/* Progress */}
         <div className="mt-3 ml-8">
           <div className="flex items-center justify-between text-xs mb-1">
             <span className="text-gray-600">
@@ -565,7 +626,6 @@ export function OrdersPage({
           <ProgressBar percent={progress.percent} size="small" />
         </div>
 
-        {/* Stats */}
         <div className="mt-3 ml-8 grid grid-cols-4 gap-2">
           <div className="rounded-md bg-black/50 px-2 py-1 text-center">
             <p className="text-xs font-medium text-yellow-400">{(order.totalViews / 1000).toFixed(0)}k</p>
@@ -585,9 +645,7 @@ export function OrdersPage({
           </div>
         </div>
 
-        {/* Individual Controls */}
         <div className="mt-3 ml-8 flex items-center gap-2 flex-wrap">
-          {/* Pause/Resume - Only show if not cancelled */}
           {!isCancelled && status === "running" && (
             <button
               onClick={(e) => {
@@ -614,7 +672,6 @@ export function OrdersPage({
             </button>
           )}
 
-          {/* Cancel - Only show if not already cancelled/completed */}
           {!isCancelled && status !== "completed" && (
             <button
               onClick={(e) => {
@@ -630,7 +687,6 @@ export function OrdersPage({
             </button>
           )}
 
-          {/* Clone - Always available */}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -641,7 +697,6 @@ export function OrdersPage({
             📋 Clone
           </button>
 
-          {/* Open Link */}
           <a
             href={order.link}
             target="_blank"
@@ -652,7 +707,6 @@ export function OrdersPage({
             🔗 Open
           </a>
 
-          {/* 🔥 NEW: View Runs Toggle Button */}
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -668,7 +722,6 @@ export function OrdersPage({
           </button>
         </div>
 
-        {/* 🔥 NEW: Run List Table */}
         <AnimatePresence>
           {showRuns && safeRuns.length > 0 && (
             <motion.div
@@ -687,7 +740,6 @@ export function OrdersPage({
                   </span>
                 </div>
                 
-                {/* Run Table */}
                 <RunTable 
                   runs={safeRuns} 
                   runStatuses={safeRunStatuses} 
@@ -703,7 +755,6 @@ export function OrdersPage({
           )}
         </AnimatePresence>
 
-        {/* 🔥 NEW: Show message if no runs */}
         {showRuns && safeRuns.length === 0 && (
           <div className="mt-4 ml-8 rounded-lg border border-dashed border-gray-700 bg-black/30 p-4 text-center">
             <p className="text-xs text-gray-500">No runs scheduled for this order</p>
@@ -713,7 +764,6 @@ export function OrdersPage({
     );
   }
 
-  // Batch Order Detail Popup
   function BatchDetailPopup({ group }: { group: GroupedOrder }) {
     const overallProgress = getGroupProgress(group);
     const overallStatus = getGroupStatus(group);
@@ -728,7 +778,6 @@ export function OrdersPage({
       return counts;
     }, [group.orders]);
 
-    // 🔥 NEW: Calculate total runs across all orders in batch
     const totalRunsInBatch = useMemo(() => {
       return group.orders.reduce((sum, order) => sum + (order.runs?.length || 0), 0);
     }, [group.orders]);
@@ -746,7 +795,6 @@ export function OrdersPage({
           }`}
           onClick={(e) => e.stopPropagation()}
         >
-          {/* Header */}
           <div className="border-b border-gray-800 px-5 py-4 flex-shrink-0">
             <div className="flex items-center justify-between">
               <div>
@@ -776,7 +824,6 @@ export function OrdersPage({
               </button>
             </div>
 
-            {/* Overall Stats - 🔥 UPDATED: Added Total Runs */}
             <div className="mt-4 grid grid-cols-2 sm:grid-cols-5 gap-3">
               <div className="rounded-lg bg-gray-900 px-3 py-2 text-center">
                 <p className="text-xl font-bold text-yellow-400">{group.linksCount}</p>
@@ -786,7 +833,6 @@ export function OrdersPage({
                 <p className="text-xl font-bold text-yellow-400">{(group.totalViews / 1000).toFixed(0)}k</p>
                 <p className="text-[10px] text-gray-500">Total Views</p>
               </div>
-              {/* 🔥 NEW: Total Runs Card */}
               <div className="rounded-lg bg-gray-900 px-3 py-2 text-center">
                 <p className="text-xl font-bold text-blue-400">{totalRunsInBatch}</p>
                 <p className="text-[10px] text-gray-500">Total Runs</p>
@@ -802,7 +848,6 @@ export function OrdersPage({
               </div>
             </div>
 
-            {/* Status Summary */}
             <div className="mt-3 flex flex-wrap gap-2">
               {Object.entries(statusCounts).map(([status, count]) => (
                 <div key={status} className="flex items-center gap-1 text-xs">
@@ -812,7 +857,6 @@ export function OrdersPage({
               ))}
             </div>
 
-            {/* Bulk Actions - Only show if not all cancelled */}
             {!isCancelled && (
               <div className="mt-4 flex flex-wrap gap-2">
                 <button
@@ -865,7 +909,6 @@ export function OrdersPage({
             )}
           </div>
 
-          {/* Individual Links List */}
           <div className="flex-1 overflow-y-auto p-5">
             <h4 className="text-sm font-semibold text-gray-400 mb-3">
               📋 Individual Links ({group.orders.length}) - Click "View Runs" to see run schedule
@@ -881,7 +924,6 @@ export function OrdersPage({
     );
   }
 
-  // Single Order Detail Popup (for non-batch orders)
   function SingleOrderPopup({ order }: { order: CreatedOrder }) {
     return (
       <div
@@ -917,9 +959,12 @@ export function OrdersPage({
     );
   }
 
+  // 🔥 NEW: Show polling status indicator
+  const timeSinceLastPoll = Math.floor((Date.now() - lastPolled) / 1000);
+  const isRecentlyPolled = timeSinceLastPoll < 20;
+
   return (
     <div className="mx-auto max-w-7xl space-y-6 px-6 py-8">
-      {/* Header */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="flex items-center gap-3">
@@ -930,16 +975,15 @@ export function OrdersPage({
             Track and manage all your operations
           </p>
         </div>
+        {/* 🔥 NEW: Live monitoring indicator with last poll time */}
         <div className="flex items-center gap-2 text-xs text-gray-600">
-          <span className="inline-flex h-2 w-2 rounded-full bg-yellow-400 animate-pulse" />
-          <span>Live monitoring</span>
+          <span className={`inline-flex h-2 w-2 rounded-full ${isRecentlyPolled ? 'bg-emerald-400 animate-pulse' : 'bg-yellow-400'}`} />
+          <span>Live • Updated {timeSinceLastPoll}s ago</span>
         </div>
       </div>
 
-      {/* Stats Summary */}
       <StatsSummary />
 
-      {/* Notice */}
       {notice && (
         <div className="flex items-center justify-between rounded-xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-300">
           <div className="flex items-center gap-2">
@@ -956,10 +1000,8 @@ export function OrdersPage({
         </div>
       )}
 
-      {/* Tabs & Controls */}
       <div className="rounded-xl border border-yellow-500/20 bg-gradient-to-br from-gray-900 to-black p-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          {/* Tabs */}
           <div className="flex flex-wrap gap-2">
             {TABS.map((tab) => {
               const count = categorizedGroups[tab.key].length;
@@ -996,7 +1038,6 @@ export function OrdersPage({
             })}
           </div>
 
-          {/* Search & View Toggle */}
           <div className="flex flex-wrap items-center gap-3">
             <div className="relative flex-1 min-w-[240px]">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-600">🔍</span>
@@ -1047,7 +1088,6 @@ export function OrdersPage({
         </div>
       </div>
 
-      {/* Results Info */}
       {query && (
         <p className="text-sm text-gray-600">
           Found <span className="text-gray-400 font-medium">{filteredGroups.length}</span> missions
@@ -1055,7 +1095,6 @@ export function OrdersPage({
         </p>
       )}
 
-      {/* Orders Display */}
       {filteredGroups.length === 0 ? (
         <EmptyState tab={activeTab} />
       ) : viewMode === "rows" ? (
@@ -1087,7 +1126,6 @@ export function OrdersPage({
         </div>
       )}
 
-      {/* Detail Popup */}
       <AnimatePresence>
         {openedGroup && (
           openedGroup.isBatch ? (
