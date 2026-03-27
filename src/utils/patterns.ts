@@ -425,8 +425,6 @@ const ORGANIC_PATTERN_LIBRARY: OrganicPatternProfile[] = [
 
 let lastPatternKey: string | null = null;
 
-// 🔥 REMOVED: const MIN_VIEWS_PER_RUN = 100; (now comes from config)
-
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const random = (min: number, max: number) => Math.random() * (max - min) + min;
 const randomInt = (min: number, max: number) => Math.floor(random(min, max + 1));
@@ -515,13 +513,10 @@ function pickWeightedIndex(weights: number[]): number {
   return Math.max(0, weights.length - 1);
 }
 
-// 🔥 UPDATED: Now accepts minViewsPerRun as parameter
 function resolveRunCount(totalViews: number, desiredRuns: number, averageTarget: number, minViewsPerRun: number): number {
-  // Maximum runs possible based on minimum views per run
   const maxRunsByMinimum = Math.max(1, Math.floor(totalViews / minViewsPerRun));
   let runCount = clamp(desiredRuns, 1, maxRunsByMinimum);
 
-  // Ensure average views per run is reasonable
   while (runCount > 1 && totalViews / runCount < minViewsPerRun * 1.3) {
     runCount -= 1;
   }
@@ -628,7 +623,6 @@ function allocateRounded(values: number[], total: number): number[] {
   return floors;
 }
 
-// 🔥 UPDATED: Now accepts minViewsPerRun as parameter
 function redistributeForMinimum(runs: number[], minimum: number): number[] {
   const result = [...runs];
 
@@ -656,7 +650,6 @@ function redistributeForMinimum(runs: number[], minimum: number): number[] {
     }
   }
 
-  // Merge runs that are still below minimum
   for (let index = 0; index < result.length; index += 1) {
     if (result[index] >= minimum || result.length === 1) continue;
 
@@ -673,7 +666,6 @@ function redistributeForMinimum(runs: number[], minimum: number): number[] {
   return result;
 }
 
-// 🔥 UPDATED: Now accepts minViewsPerRun as parameter
 function distributeWithMinimum(weights: number[], total: number, minimum: number): number[] {
   if (total === 0) return [0];
   if (total < minimum) return [total];
@@ -688,7 +680,6 @@ function distributeWithMinimum(weights: number[], total: number, minimum: number
   return extras.map((extra) => extra + minimum);
 }
 
-// 🔥 UPDATED: Now accepts minViewsPerRun as parameter
 function nudgeConsecutiveDuplicates(values: number[], minimum: number): number[] {
   if (values.length < 2) return values;
   const result = [...values];
@@ -719,7 +710,6 @@ function nudgeConsecutiveDuplicates(values: number[], minimum: number): number[]
   return result;
 }
 
-// 🔥 UPDATED: Now accepts minViewsPerRun as parameter
 function generateViewRunsFromCurve(
   patternType: PatternType,
   totalViews: number,
@@ -833,180 +823,7 @@ function intervalPresetFactor(preset: QuickPatternPreset | null, t: number): num
   return 1;
 }
 
-interface EngagementProfile {
-  densityMin: number;
-  densityMax: number;
-  perRunMin: number;
-  perRunMax: number;
-}
-
-type EngagementKind = "likes" | "shares" | "saves";
-
-function resolveEngagementProfile(kind: EngagementKind): EngagementProfile {
-  if (kind === "likes") return { densityMin: 0.2, densityMax: 0.35, perRunMin: 10, perRunMax: 20 };
-  return { densityMin: 0.1, densityMax: 0.2, perRunMin: 10, perRunMax: 18 };
-}
-
-function buildEngagementWeights(runs: { views: number; at: Date }[], peakHoursBoost: boolean): number[] {
-  const maxViews = Math.max(1, ...runs.map((run) => run.views));
-  return runs.map((run, index) => {
-    const previous = index > 0 ? runs[index - 1].views : run.views;
-    const next = index < runs.length - 1 ? runs[index + 1].views : run.views;
-    const increase = Math.max(0, run.views - previous) / maxViews;
-    const localSpike = Math.max(0, run.views - (previous + next) / 2) / maxViews;
-    const t = index / Math.max(1, runs.length - 1);
-    const phaseBoost = t > 0.3 && t < 0.75 ? 1.15 : 1;
-    const hour = run.at.getHours();
-    const peakBoost = peakHoursBoost && hour >= 18 && hour <= 23 ? 1.35 : 1;
-    return Math.max(0.01, (0.5 + run.views / maxViews * 0.65 + increase * 1.1 + localSpike * 1.2) * phaseBoost * peakBoost);
-  });
-}
-
-function applyNoise(value: number, min: number, max: number): number {
-  return clamp(value + randomInt(-2, 2), min, max);
-}
-
-function selectEngagementRuns(length: number, count: number, weights: number[]): number[] {
-  if (count <= 0 || length === 0) return [];
-
-  const selected = new Set<number>();
-  const minGap = Math.max(1, Math.floor(length / Math.max(6, count * 2.5)));
-  const anchors = [0.15, 0.5, 0.82];
-
-  for (const anchor of anchors) {
-    if (selected.size >= count) break;
-    const center = Math.round((length - 1) * anchor);
-    const start = Math.max(0, center - Math.max(2, Math.floor(length * 0.08)));
-    const end = Math.min(length - 1, center + Math.max(2, Math.floor(length * 0.08)));
-    const candidates = Array.from({ length: end - start + 1 }, (_, offset) => start + offset).filter((index) => {
-      for (const taken of selected) {
-        if (Math.abs(taken - index) <= minGap) return false;
-      }
-      return true;
-    });
-    if (candidates.length === 0) continue;
-    const candidateWeights = candidates.map((index) => Math.max(0.01, weights[index] * random(0.9, 1.12)));
-    selected.add(candidates[pickWeightedIndex(candidateWeights)]);
-  }
-
-  while (selected.size < count) {
-    const candidates = Array.from({ length }, (_, index) => index).filter((index) => {
-      for (const taken of selected) {
-        if (Math.abs(taken - index) <= minGap && Math.random() < 0.8) return false;
-      }
-      return true;
-    });
-    if (candidates.length === 0) break;
-    const candidateWeights = candidates.map((index) => Math.max(0.01, weights[index] * random(0.9, 1.15)));
-    selected.add(candidates[pickWeightedIndex(candidateWeights)]);
-  }
-
-  const result = Array.from(selected).sort((a, b) => a - b);
-  const maxGap = Math.max(5, Math.ceil(length / Math.max(2, count)) + 1);
-  let cursor = 0;
-  while (cursor < result.length - 1 && result.length < count) {
-    const gap = result[cursor + 1] - result[cursor];
-    if (gap > maxGap) {
-      const mid = Math.floor((result[cursor] + result[cursor + 1]) / 2);
-      result.splice(cursor + 1, 0, mid);
-    }
-    cursor += 1;
-  }
-
-  return result.slice(0, count);
-}
-
-function phaseRangeForKind(kind: EngagementKind, t: number): { min: number; max: number } {
-  if (kind === "likes") {
-    if (t < 0.33) return { min: 10, max: 14 };
-    if (t < 0.72) return { min: 14, max: 20 };
-    return { min: 12, max: 18 };
-  }
-  if (t < 0.33) return { min: 10, max: 13 };
-  if (t < 0.72) return { min: 12, max: 18 };
-  return { min: 11, max: 16 };
-}
-
-function pickEngagementValue(kind: EngagementKind, t: number, lastValue: number | null): number {
-  const profile = resolveEngagementProfile(kind);
-  const range = phaseRangeForKind(kind, t);
-  const min = clamp(range.min, profile.perRunMin, profile.perRunMax);
-  const max = clamp(range.max, profile.perRunMin, profile.perRunMax);
-  let value = applyNoise(randomInt(min, max), profile.perRunMin, profile.perRunMax);
-
-  if (lastValue !== null && value === lastValue) {
-    value = clamp(value + (Math.random() < 0.5 ? -1 : 1), profile.perRunMin, profile.perRunMax);
-  }
-
-  return value;
-}
-
-function distributeEngagement(
-  runs: { views: number; at: Date }[],
-  targetTotal: number,
-  peakHoursBoost: boolean,
-  kind: EngagementKind
-): number[] {
-  const result = Array.from({ length: runs.length }, () => 0);
-  if (targetTotal < 10 || runs.length === 0) return result;
-
-  const profile = resolveEngagementProfile(kind);
-  const minCount = Math.max(1, Math.round(runs.length * profile.densityMin));
-  const maxCount = Math.max(minCount, Math.round(runs.length * profile.densityMax));
-  const preferredCount = clamp(randomInt(minCount, maxCount), 1, runs.length);
-  const requiredCount = Math.ceil(targetTotal / Math.max(profile.perRunMin + 3, profile.perRunMax - 1));
-  const selectedCount = clamp(Math.max(preferredCount, Math.min(maxCount, requiredCount)), 1, runs.length);
-
-  const weights = buildEngagementWeights(runs, peakHoursBoost);
-  const selected = selectEngagementRuns(runs.length, selectedCount, weights);
-  const effectiveCount = Math.max(1, selected.length);
-
-  const feasibleMin = effectiveCount * profile.perRunMin;
-  const feasibleMax = effectiveCount * profile.perRunMax;
-  const naturalMid = Math.round(effectiveCount * ((profile.perRunMin + profile.perRunMax) / 2));
-  const target =
-    targetTotal > feasibleMax
-      ? randomInt(Math.max(feasibleMin, naturalMid - effectiveCount), Math.max(feasibleMin, naturalMid + Math.floor(effectiveCount * 0.8)))
-      : clamp(targetTotal, feasibleMin, feasibleMax);
-  let runningTotal = 0;
-  let lastAssigned: number | null = null;
-  let secondLastAssigned: number | null = null;
-
-  for (const index of selected) {
-    const t = index / Math.max(1, runs.length - 1);
-    let value = pickEngagementValue(kind, t, lastAssigned);
-    if (secondLastAssigned !== null && value === secondLastAssigned) {
-      value = clamp(value + (Math.random() < 0.5 ? -1 : 1), profile.perRunMin, profile.perRunMax);
-    }
-
-    const spikeBias = weights[index] / Math.max(0.01, Math.max(...weights));
-    if (Math.random() < spikeBias * 0.45) value = Math.min(profile.perRunMax, value + randomInt(1, 2));
-
-    result[index] = value;
-    runningTotal += value;
-    secondLastAssigned = lastAssigned;
-    lastAssigned = value;
-  }
-
-  let delta = target - runningTotal;
-  const adjustable = selected.map((index) => ({ index, weight: Math.max(0.01, weights[index]) }));
-  while (delta !== 0 && adjustable.length > 0) {
-    const chosen = adjustable[pickWeightedIndex(adjustable.map((slot) => slot.weight))].index;
-    if (delta > 0 && result[chosen] < profile.perRunMax) {
-      result[chosen] += 1;
-      delta -= 1;
-    } else if (delta < 0 && result[chosen] > profile.perRunMin) {
-      result[chosen] -= 1;
-      delta += 1;
-    } else {
-      const next = adjustable.find((slot) => (delta > 0 ? result[slot.index] < profile.perRunMax : result[slot.index] > profile.perRunMin));
-      if (!next) break;
-    }
-  }
-
-  return result;
-}
-
+// 🔥 NEW: Distribute likes proportionally to views (5-8% ratio)
 function distributeLikesProportional(runs: { views: number }[], targetTotal: number): number[] {
   if (runs.length === 0) return [];
 
@@ -1089,48 +906,137 @@ function distributeLikesProportional(runs: { views: number }[], targetTotal: num
   return scaled;
 }
 
-function normalizeSharesRuns(values: number[], minimum: number): number[] {
-  const result = Array.from({ length: values.length }, () => 0);
-  if (values.length === 0) return result;
+// 🔥 NEW: Distribute shares proportionally to views (0.5-2% ratio)
+function distributeSharesProportional(runs: { views: number }[], targetTotal: number): number[] {
+  if (runs.length === 0) return [];
+  if (targetTotal < 20) return Array.from({ length: runs.length }, () => 0);
 
-  let buffer = 0;
-  let lastAssignedIndex = -1;
-
-  for (let index = 0; index < values.length; index += 1) {
-    if (values[index] <= 0) continue;
-    buffer += values[index];
-
-    if (buffer >= minimum) {
-      result[index] = buffer;
-      lastAssignedIndex = index;
-      buffer = 0;
+  const totalViews = Math.max(1, runs.reduce((sum, run) => sum + Math.max(0, run.views), 0));
+  const minimumPerRun = 20; // Shares minimum is 20
+  
+  // Calculate how many runs should have shares (not all runs need shares)
+  const runsWithShares = Math.max(1, Math.min(runs.length, Math.ceil(targetTotal / minimumPerRun)));
+  
+  // If we can't distribute minimum to enough runs, reduce minimum
+  const effectiveMinimum = Math.min(minimumPerRun, Math.floor(targetTotal / runsWithShares));
+  
+  const result = Array.from({ length: runs.length }, () => 0);
+  
+  // Select runs with highest views to get shares
+  const sortedIndexes = runs
+    .map((run, index) => ({ index, views: run.views }))
+    .sort((a, b) => b.views - a.views)
+    .slice(0, runsWithShares)
+    .map((item) => item.index);
+  
+  // Calculate weights for selected runs
+  const selectedTotalViews = sortedIndexes.reduce((sum, idx) => sum + Math.max(1, runs[idx].views), 0);
+  
+  // Distribute proportionally
+  let remaining = targetTotal;
+  sortedIndexes.forEach((idx, i) => {
+    const proportion = Math.max(1, runs[idx].views) / selectedTotalViews;
+    let share = Math.round(targetTotal * proportion * random(0.85, 1.15));
+    
+    // Ensure minimum
+    share = Math.max(effectiveMinimum, share);
+    
+    // Don't exceed remaining
+    share = Math.min(share, remaining);
+    
+    // Last one gets the rest
+    if (i === sortedIndexes.length - 1) {
+      share = remaining;
+    }
+    
+    result[idx] = share;
+    remaining -= share;
+  });
+  
+  // Ensure no consecutive duplicates
+  for (let i = 1; i < result.length; i++) {
+    if (result[i] > 0 && result[i] === result[i - 1]) {
+      if (result[i] > effectiveMinimum) {
+        result[i] -= 1;
+      } else {
+        result[i] += 1;
+      }
     }
   }
-
-  if (buffer > 0) {
-    if (lastAssignedIndex >= 0) {
-      result[lastAssignedIndex] += buffer;
-    } else {
-      result[values.length - 1] = buffer;
-    }
-  }
-
+  
   return result;
 }
 
-function clearFirstRun(values: number[]): number[] {
-  const result = [...values];
-  if (result.length === 0 || result[0] === 0) return result;
-  if (result.length === 1) return [0];
+// 🔥 NEW: Distribute saves proportionally to views (1-2% ratio)
+function distributeSavesProportional(runs: { views: number }[], targetTotal: number): number[] {
+  if (runs.length === 0) return [];
+  if (targetTotal < 10) return Array.from({ length: runs.length }, () => 0);
 
-  const carry = result[0];
-  result[0] = 0;
-
-  let target = 1;
-  for (let index = 2; index < result.length; index += 1) {
-    if (result[index] > result[target]) target = index;
+  const totalViews = Math.max(1, runs.reduce((sum, run) => sum + Math.max(0, run.views), 0));
+  const minimumPerRun = 10; // Saves minimum is 10
+  
+  // Calculate how many runs should have saves
+  const runsWithSaves = Math.max(1, Math.min(runs.length, Math.ceil(targetTotal / minimumPerRun)));
+  
+  // If we can't distribute minimum to enough runs, reduce minimum
+  const effectiveMinimum = Math.min(minimumPerRun, Math.floor(targetTotal / runsWithSaves));
+  
+  const result = Array.from({ length: runs.length }, () => 0);
+  
+  // Select runs with highest views to get saves
+  const sortedIndexes = runs
+    .map((run, index) => ({ index, views: run.views }))
+    .sort((a, b) => b.views - a.views)
+    .slice(0, runsWithSaves)
+    .map((item) => item.index);
+  
+  // Calculate weights for selected runs
+  const selectedTotalViews = sortedIndexes.reduce((sum, idx) => sum + Math.max(1, runs[idx].views), 0);
+  
+  // Distribute proportionally
+  let remaining = targetTotal;
+  sortedIndexes.forEach((idx, i) => {
+    const proportion = Math.max(1, runs[idx].views) / selectedTotalViews;
+    let save = Math.round(targetTotal * proportion * random(0.85, 1.15));
+    
+    // Ensure minimum
+    save = Math.max(effectiveMinimum, save);
+    
+    // Don't exceed remaining
+    save = Math.min(save, remaining);
+    
+    // Last one gets the rest
+    if (i === sortedIndexes.length - 1) {
+      save = remaining;
+    }
+    
+    result[idx] = save;
+    remaining -= save;
+  });
+  
+  // Ensure no consecutive duplicates
+  for (let i = 1; i < result.length; i++) {
+    if (result[i] > 0 && result[i] === result[i - 1]) {
+      if (result[i] > effectiveMinimum) {
+        result[i] -= 1;
+      } else {
+        result[i] += 1;
+      }
+    }
   }
-  result[target] += carry;
+  
+  // Clear first run for saves (more organic)
+  if (result.length > 1 && result[0] > 0) {
+    const carry = result[0];
+    result[0] = 0;
+    // Find the run with highest saves to add the carry
+    let maxIdx = 1;
+    for (let i = 2; i < result.length; i++) {
+      if (result[i] > result[maxIdx]) maxIdx = i;
+    }
+    result[maxIdx] += carry;
+  }
+  
   return result;
 }
 
@@ -1144,9 +1050,7 @@ function detectRisk(viewsPerHour: number, variancePercent: number, hours: number
   return "Safe";
 }
 
-// 🔥 MAIN FUNCTION - Now uses config.minViewsPerRun
 export function createPatternPlan(config: OrderConfig): PatternPlan {
-  // 🔥 Get minViewsPerRun from config (default to 100 if not set)
   const minViewsPerRun = config.minViewsPerRun || 100;
   
   const presetProfile = resolvePresetProfile(config.quickPreset);
@@ -1158,10 +1062,8 @@ export function createPatternPlan(config: OrderConfig): PatternPlan {
   const requestedViews = Math.max(0, Math.floor(config.totalViews));
   const variance = clamp(config.variancePercent * presetProfile.varianceMultiplier, 10, 50);
   
-  // 🔥 Calculate max possible runs based on minViewsPerRun
   const maxPossibleRuns = Math.max(1, Math.floor(requestedViews / minViewsPerRun));
   
-  // 🔥 Adjusted run calculation - respect minimum views constraint
   const baseRequestedRuns = Math.round(randomInt(50, 80) * presetProfile.runMultiplier * selectedPatternProfile.runMultiplier);
   const requestedRuns = Math.min(baseRequestedRuns, maxPossibleRuns);
   
@@ -1177,7 +1079,6 @@ export function createPatternPlan(config: OrderConfig): PatternPlan {
   const durationMin = durationHours * 60;
   const startDelayMin = clamp(config.startDelayHours || 0, 0, 168) * 60;
 
-  // 🔥 Pass minViewsPerRun to view generation
   let viewRuns = generateViewRunsFromCurve(
     patternType, 
     requestedViews, 
@@ -1217,21 +1118,28 @@ export function createPatternPlan(config: OrderConfig): PatternPlan {
   });
 
   const totalViews = provisionalRuns.reduce((acc, run) => acc + run.views, 0);
-  const likesRatio = random(0.05, 0.08);
-  const sharesRatio = random(0.005, 0.02);
-  const savesRatio = random(0.01, 0.02);
+  
+  // 🔥 FIXED: Engagement ratios now properly scale with views
+  const likesRatio = random(0.05, 0.08);   // 5-8% of views
+  const sharesRatio = random(0.005, 0.02); // 0.5-2% of views
+  const savesRatio = random(0.01, 0.02);   // 1-2% of views
 
   const likesTotal = config.includeLikes ? Math.max(10, Math.floor(totalViews * likesRatio)) : 0;
   const sharesTotal = config.includeShares ? Math.max(20, Math.floor(totalViews * sharesRatio)) : 0;
   const savesTotal = config.includeSaves ? Math.max(10, Math.floor(totalViews * savesRatio)) : 0;
 
-  const likesBase = config.includeLikes ? distributeLikesProportional(provisionalRuns, likesTotal) : viewRuns.map(() => 0);
-  const sharesBase = config.includeShares ? distributeEngagement(provisionalRuns, sharesTotal, config.peakHoursBoost, "shares") : viewRuns.map(() => 0);
-  const savesBase = config.includeSaves ? distributeEngagement(provisionalRuns, savesTotal, config.peakHoursBoost, "saves") : viewRuns.map(() => 0);
-
-  const likesRuns = likesBase;
-  const sharesRuns = normalizeSharesRuns(sharesBase, 20);
-  const savesRuns = clearFirstRun(savesBase);
+  // 🔥 FIXED: Use proportional distribution for ALL engagement types
+  const likesRuns = config.includeLikes 
+    ? distributeLikesProportional(provisionalRuns, likesTotal) 
+    : viewRuns.map(() => 0);
+  
+  const sharesRuns = config.includeShares 
+    ? distributeSharesProportional(provisionalRuns, sharesTotal) 
+    : viewRuns.map(() => 0);
+  
+  const savesRuns = config.includeSaves 
+    ? distributeSavesProportional(provisionalRuns, savesTotal) 
+    : viewRuns.map(() => 0);
 
   let cumulativeViews = 0;
   let cumulativeLikes = 0;
