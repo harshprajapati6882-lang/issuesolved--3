@@ -425,7 +425,8 @@ const ORGANIC_PATTERN_LIBRARY: OrganicPatternProfile[] = [
 
 let lastPatternKey: string | null = null;
 
-const MIN_VIEWS_PER_RUN = 100;
+// 🔥 REMOVED: Hardcoded constant
+// const MIN_VIEWS_PER_RUN = 100;
 
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
 const random = (min: number, max: number) => Math.random() * (max - min) + min;
@@ -488,7 +489,6 @@ function pickPatternProfile(presetType: PatternType | undefined): OrganicPattern
   const candidates = pool.length > 0 ? pool : ORGANIC_PATTERN_LIBRARY;
   let picked = candidates[randomInt(0, candidates.length - 1)];
 
-  // Prevent immediate repeats so New Pattern feels meaningfully different.
   if (candidates.length > 1 && lastPatternKey === picked.key) {
     const alternatives = candidates.filter((profile) => profile.key !== lastPatternKey);
     picked = alternatives[randomInt(0, alternatives.length - 1)];
@@ -516,8 +516,9 @@ function pickWeightedIndex(weights: number[]): number {
   return Math.max(0, weights.length - 1);
 }
 
-function resolveRunCount(totalViews: number, desiredRuns: number, averageTarget: number): number {
-  const maxRunsByMinimum = Math.max(1, Math.floor(totalViews / MIN_VIEWS_PER_RUN));
+// 🔥 UPDATED: Accept minViews as parameter
+function resolveRunCount(totalViews: number, desiredRuns: number, averageTarget: number, minViews: number): number {
+  const maxRunsByMinimum = Math.max(1, Math.floor(totalViews / minViews));
   let runCount = clamp(desiredRuns, 1, maxRunsByMinimum);
 
   while (runCount > 1 && totalViews / runCount < 130) runCount -= 1;
@@ -710,16 +711,18 @@ function nudgeConsecutiveDuplicates(values: number[], minimum: number): number[]
   return result;
 }
 
+// 🔥 UPDATED: Accept minViews as parameter instead of using hardcoded constant
 function generateViewRunsFromCurve(
   patternType: PatternType,
   totalViews: number,
   runCount: number,
   variancePercent: number,
   preset: QuickPatternPreset | null,
-  variant: OrganicPatternVariant
+  variant: OrganicPatternVariant,
+  minViews: number // 🔥 NEW PARAMETER
 ): number[] {
   if (totalViews <= 0) return [0];
-  if (totalViews < MIN_VIEWS_PER_RUN) return [totalViews];
+  if (totalViews < minViews) return [totalViews]; // 🔥 Use parameter
 
   const context = createCurveContext(patternType);
   const varianceFactor = clamp(variancePercent, 10, 50) / 100;
@@ -783,15 +786,17 @@ function generateViewRunsFromCurve(
     }
     return value * random(0.86, 1.02);
   });
-  const phasedRuns = distributeWithMinimum(phasedWeights, totalViews, MIN_VIEWS_PER_RUN);
-  const minimumSafe = redistributeForMinimum(phasedRuns, MIN_VIEWS_PER_RUN);
-  const finalRuns = nudgeConsecutiveDuplicates(minimumSafe, MIN_VIEWS_PER_RUN);
+  
+  // 🔥 UPDATED: Use passed minViews instead of hardcoded 100
+  const phasedRuns = distributeWithMinimum(phasedWeights, totalViews, minViews);
+  const minimumSafe = redistributeForMinimum(phasedRuns, minViews);
+  const finalRuns = nudgeConsecutiveDuplicates(minimumSafe, minViews);
 
   if (finalRuns.length > 1 && finalRuns.every((value) => value === finalRuns[0])) {
     finalRuns[0] += 1;
     let adjusted = false;
     for (let donor = finalRuns.length - 1; donor >= 1; donor -= 1) {
-      if (finalRuns[donor] > MIN_VIEWS_PER_RUN) {
+      if (finalRuns[donor] > minViews) {
         finalRuns[donor] -= 1;
         adjusted = true;
         break;
@@ -1085,7 +1090,6 @@ function normalizeSharesRuns(values: number[], minimum: number): number[] {
   let buffer = 0;
   let lastAssignedIndex = -1;
 
-  // Single-pass buffering avoids in-loop mutation and repeated rescans.
   for (let index = 0; index < values.length; index += 1) {
     if (values[index] <= 0) continue;
     buffer += values[index];
@@ -1134,7 +1138,11 @@ function detectRisk(viewsPerHour: number, variancePercent: number, hours: number
   return "Safe";
 }
 
-export function createPatternPlan(config: OrderConfig): PatternPlan {
+// 🔥 UPDATED: Accept minViewsPerRun from config
+export function createPatternPlan(config: OrderConfig & { minViewsPerRun?: number }): PatternPlan {
+  // 🔥 Get minViews from config or default to 100
+  const MIN_VIEWS_PER_RUN = config.minViewsPerRun || 100;
+  
   const presetProfile = resolvePresetProfile(config.quickPreset);
   const selectedPatternProfile = pickPatternProfile(presetProfile.patternType);
   const patternType = presetProfile.patternType ?? selectedPatternProfile.baseType ?? pickRandomPatternType();
@@ -1144,7 +1152,10 @@ export function createPatternPlan(config: OrderConfig): PatternPlan {
   const requestedViews = Math.max(0, Math.floor(config.totalViews));
   const variance = clamp(config.variancePercent * presetProfile.varianceMultiplier, 10, 50);
   const requestedRuns = Math.round(randomInt(50, 80) * presetProfile.runMultiplier * selectedPatternProfile.runMultiplier);
-  const totalRuns = requestedViews >= MIN_VIEWS_PER_RUN ? resolveRunCount(requestedViews, requestedRuns, presetProfile.targetAverageViews) : 1;
+  
+  // 🔥 Pass minViews to resolveRunCount
+  const totalRuns = requestedViews >= MIN_VIEWS_PER_RUN ? resolveRunCount(requestedViews, requestedRuns, presetProfile.targetAverageViews, MIN_VIEWS_PER_RUN) : 1;
+  
   const durationHours = clamp(
     resolveDurationHours(config) * presetProfile.durationMultiplier * selectedPatternProfile.durationMultiplier,
     2,
@@ -1153,7 +1164,9 @@ export function createPatternPlan(config: OrderConfig): PatternPlan {
   const durationMin = durationHours * 60;
   const startDelayMin = clamp(config.startDelayHours || 0, 0, 168) * 60;
 
-  let viewRuns = generateViewRunsFromCurve(patternType, requestedViews, totalRuns, variance, config.quickPreset, variant);
+  // 🔥 Pass minViews to generateViewRunsFromCurve
+  let viewRuns = generateViewRunsFromCurve(patternType, requestedViews, totalRuns, variance, config.quickPreset, variant, MIN_VIEWS_PER_RUN);
+  
   if (config.peakHoursBoost && viewRuns.length > 1 && requestedViews >= MIN_VIEWS_PER_RUN) {
     const initialWeights = viewRuns.map((views) => Math.max(0.01, views));
     const boostedWeights = initialWeights.map((weight, index) => {
@@ -1164,6 +1177,7 @@ export function createPatternPlan(config: OrderConfig): PatternPlan {
       const boost = Math.random() < boostChance ? random(1.14, inPeakWindow ? 1.52 : 1.2) : random(0.94, 1.06);
       return weight * boost;
     });
+    // 🔥 Pass minViews to distributeWithMinimum
     viewRuns = distributeWithMinimum(boostedWeights, requestedViews, MIN_VIEWS_PER_RUN);
   }
 
