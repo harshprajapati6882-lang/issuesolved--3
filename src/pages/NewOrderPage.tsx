@@ -1,7 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { GrowthGraph } from "../components/GrowthGraph";
-import { OrderForm } from "../components/OrderForm";
 import { PatternGenerator } from "../components/PatternGenerator";
 import type {
   ApiPanel,
@@ -90,6 +89,28 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
   const [createError, setCreateError] = useState("");
   const [createSuccess, setCreateSuccess] = useState("");
   const [isCreatingOrder, setIsCreatingOrder] = useState(false);
+
+  // 🔥 NEW: Minimum views per run state
+  const [minViewsPerRun, setMinViewsPerRun] = useState(100);
+
+  // 🔥 NEW: Fetch min views setting from backend on mount
+  useEffect(() => {
+    const fetchMinViews = async () => {
+      try {
+        const backendUrl = import.meta.env.VITE_BACKEND_URL || "https://backend-y30y.onrender.com";
+        const response = await fetch(`${backendUrl}/api/settings/min-views`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.minViewsPerRun) {
+            setMinViewsPerRun(data.minViewsPerRun);
+          }
+        }
+      } catch (error) {
+        console.warn("Could not fetch min views setting, using default 100");
+      }
+    };
+    fetchMinViews();
+  }, []);
 
   const config: OrderConfig = useMemo(
     () => ({
@@ -229,7 +250,23 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
     setExpandedRuns(false);
   };
 
-  // Delivery options
+  // 🔥 NEW: Update min views on backend
+  const handleMinViewsChange = async (value: number) => {
+    const newValue = Math.max(1, Math.floor(value));
+    setMinViewsPerRun(newValue);
+
+    try {
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || "https://backend-y30y.onrender.com";
+      await fetch(`${backendUrl}/api/settings/min-views`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ minViewsPerRun: newValue }),
+      });
+    } catch (error) {
+      console.warn("Could not update min views setting on backend");
+    }
+  };
+
   const deliveryOptions: DeliveryOption[] = [
     { mode: "preset", label: "6h", hours: 6 },
     { mode: "preset", label: "12h", hours: 12 },
@@ -339,6 +376,54 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
                     <option key={bundle.id} value={bundle.id}>{bundle.name}</option>
                   ))}
                 </select>
+              </div>
+            </div>
+          </div>
+
+          {/* 🔥 NEW: Minimum Views Per Run Settings Block */}
+          <div className="rounded-xl border border-blue-500/30 bg-gradient-to-br from-blue-900/20 to-black p-3">
+            <h3 className="text-xs font-semibold text-blue-400 mb-2 flex items-center gap-2">
+              <span>⚙️</span> Global Run Settings
+            </h3>
+            
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-[10px] text-gray-400">Minimum Views Per Run</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={minViewsPerRun}
+                    onChange={(e) => handleMinViewsChange(Number(e.target.value))}
+                    min={1}
+                    max={10000}
+                    className="w-20 rounded-lg border border-blue-500/30 bg-black px-2 py-1 text-xs text-white text-center focus:border-blue-500/50 focus:outline-none"
+                  />
+                  <span className="text-[9px] text-gray-500">views/run</span>
+                </div>
+              </div>
+              
+              <div className="rounded-lg border border-blue-500/20 bg-blue-500/5 px-2 py-1.5">
+                <p className="text-[9px] text-blue-300/80 leading-relaxed">
+                  ℹ️ All runs will have minimum <strong>{minViewsPerRun}</strong> views. Pattern generator and backend both enforce this limit.
+                </p>
+              </div>
+
+              {/* Quick presets for min views */}
+              <div className="flex gap-1 flex-wrap">
+                {[50, 100, 200, 500, 1000].map((preset) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => handleMinViewsChange(preset)}
+                    className={`rounded-md px-2 py-0.5 text-[9px] font-medium transition ${
+                      minViewsPerRun === preset
+                        ? "border border-blue-500 bg-blue-500/20 text-blue-300"
+                        : "border border-blue-500/20 bg-black text-gray-500 hover:text-blue-300"
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                ))}
               </div>
             </div>
           </div>
@@ -688,8 +773,8 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
               setCreateError("Quantity must be > 0.");
               return;
             }
-            if (quantity < 100) {
-              setCreateError("Views must be at least 100.");
+            if (quantity < minViewsPerRun) {
+              setCreateError(`Views must be at least ${minViewsPerRun}.`);
               return;
             }
 
@@ -717,7 +802,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
 
             const viewRuns = (safePlan?.runs || []).map((run) => ({
               time: run.at.toISOString(),
-              quantity: Math.floor(run.views),
+              quantity: Math.max(Math.floor(run.views), minViewsPerRun),
             }));
             if (!viewRuns.length || viewRuns.some((run) => !run.time || !Number.isFinite(run.quantity) || run.quantity <= 0)) {
               setCreateError("Invalid run schedule. Regenerate.");
@@ -753,7 +838,6 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
             setIsCreatingOrder(true);
             setCreateSuccess(`Processing ${targets.length} missions...`);
             
-            // 🔧 NEW: Generate batch ID for bulk orders
             const batchId = targets.length > 1 ? `batch-${Date.now()}` : undefined;
             
             try {
@@ -794,9 +878,9 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
                   const order: CreatedOrder = {
                     id: createOrderId(),
                     name: orderName.trim() || `Mission #${createOrderId()}`,
-                    batchId, // 🔧 NEW
-                    batchIndex: index + 1, // 🔧 NEW (1-based)
-                    batchTotal: targets.length, // 🔧 NEW
+                    batchId,
+                    batchIndex: index + 1,
+                    batchTotal: targets.length,
                     schedulerOrderId: result.schedulerOrderId,
                     smmOrderId: result.orderId ?? "Scheduled",
                     link: trimmedUrl,
@@ -824,9 +908,9 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
                   const failedOrder: CreatedOrder = {
                     id: createOrderId(),
                     name: orderName.trim() || `Mission #${createOrderId()}`,
-                    batchId, // 🔧 NEW
-                    batchIndex: index + 1, // 🔧 NEW
-                    batchTotal: targets.length, // 🔧 NEW
+                    batchId,
+                    batchIndex: index + 1,
+                    batchTotal: targets.length,
                     smmOrderId: "N/A",
                     link: trimmedUrl,
                     totalViews: quantity,
