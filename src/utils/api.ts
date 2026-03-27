@@ -38,10 +38,31 @@ interface OrderControlResult {
   error?: string;
 }
 
-// 🔥 NEW: Fetch order runs result
 interface FetchOrderRunsResult {
   schedulerOrderId: string;
   runs: BackendRunInfo[];
+}
+
+interface OrderStatusResult {
+  schedulerOrderId: string;
+  name: string;
+  link: string;
+  status: string;
+  totalRuns: number;
+  completedRuns: number;
+  runStatuses: string[];
+  createdAt: string;
+  lastUpdatedAt: string;
+  runs: Array<{
+    id: string;
+    label: string;
+    quantity: number;
+    time: string;
+    status: string;
+    smmOrderId: string | null;
+    executedAt: string | null;
+    error: string | null;
+  }>;
 }
 
 const BACKEND_BASE_URL =
@@ -338,7 +359,6 @@ export async function updateOrderControl(payload: {
   throw lastError || new Error("Order control failed after all retries");
 }
 
-// 🔥 NEW: Fetch detailed run info from backend
 export async function fetchOrderRuns(schedulerOrderId: string): Promise<FetchOrderRunsResult> {
   const endpoint = `${BACKEND_BASE_URL.replace(/\/$/, "")}/api/order/runs/${schedulerOrderId}`;
   
@@ -362,6 +382,93 @@ export async function fetchOrderRuns(schedulerOrderId: string): Promise<FetchOrd
     };
   } catch (error) {
     console.error(`[Fetch Order Runs] Error for ${schedulerOrderId}:`, error);
+    throw error;
+  }
+}
+
+// 🔥 NEW: Fetch order status with detailed run info
+export async function fetchOrderStatus(schedulerOrderId: string): Promise<OrderStatusResult> {
+  const endpoint = `${BACKEND_BASE_URL.replace(/\/$/, "")}/api/order/status/${schedulerOrderId}`;
+  
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch order status (HTTP ${response.status})`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error(`[Fetch Order Status] Error for ${schedulerOrderId}:`, error);
+    throw error;
+  }
+}
+
+// 🔥 NEW: Fetch all orders status
+export async function fetchAllOrdersStatus(): Promise<{
+  total: number;
+  orders: Array<OrderStatusResult & { runs: Array<{ id: string; label: string; quantity: number; time: string; status: string; smmOrderId: string | null }> }>;
+}> {
+  const endpoint = `${BACKEND_BASE_URL.replace(/\/$/, "")}/api/orders/status`;
+  
+  try {
+    const response = await fetch(endpoint, {
+      method: "GET",
+      headers: {
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to fetch orders status (HTTP ${response.status})`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error(`[Fetch All Orders Status] Error:`, error);
+    throw error;
+  }
+}
+
+// 🔥 NEW: Fetch minimum views setting
+export async function fetchMinViewsSetting(): Promise<number> {
+  const endpoint = `${BACKEND_BASE_URL.replace(/\/$/, "")}/api/settings/min-views`;
+  
+  try {
+    const response = await fetch(endpoint);
+    const data = await response.json();
+    return data.minViewsPerRun || 100;
+  } catch (error) {
+    console.warn("[Fetch Min Views] Failed, using default 100");
+    return 100;
+  }
+}
+
+// 🔥 NEW: Update minimum views setting
+export async function updateMinViewsSetting(minViewsPerRun: number): Promise<{ success: boolean; minViewsPerRun: number }> {
+  const endpoint = `${BACKEND_BASE_URL.replace(/\/$/, "")}/api/settings/min-views`;
+  
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ minViewsPerRun }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to update min views (HTTP ${response.status})`);
+    }
+
+    return await response.json();
+  } catch (error) {
+    console.error(`[Update Min Views] Error:`, error);
     throw error;
   }
 }
