@@ -90,10 +90,10 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
   const [createSuccess, setCreateSuccess] = useState("");
   const [isCreatingOrder, setIsCreatingOrder] = useState(false);
 
-  // 🔥 NEW: Minimum views per run state
+  // Minimum views per run state
   const [minViewsPerRun, setMinViewsPerRun] = useState(100);
 
-  // 🔥 NEW: Fetch min views setting from backend on mount
+  // Fetch min views setting from backend on mount
   useEffect(() => {
     const fetchMinViews = async () => {
       try {
@@ -112,7 +112,21 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
     fetchMinViews();
   }, []);
 
-  // 🔥 UPDATED: Config now includes minViewsPerRun
+  // 🔥 NEW: Calculate link count for price calculation
+  const linkCount = useMemo(() => {
+    const bulkTargets = bulkLinks
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    const singleTarget = postUrl.trim();
+    
+    if (bulkTargets.length > 0) {
+      return bulkTargets.length;
+    }
+    return singleTarget ? 1 : 0;
+  }, [bulkLinks, postUrl]);
+
+  // Config now includes minViewsPerRun
   const config: OrderConfig = useMemo(
     () => ({
       postUrl,
@@ -130,7 +144,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
           : delivery.mode === "auto"
             ? { ...delivery, hours: Math.max(6, Math.min(48, delivery.hours)) }
             : delivery,
-      minViewsPerRun, // 🔥 NEW: Pass to pattern generator
+      minViewsPerRun,
     }),
     [
       postUrl,
@@ -144,7 +158,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
       quickPreset,
       delivery,
       customHours,
-      minViewsPerRun, // 🔥 NEW: Dependency
+      minViewsPerRun,
     ]
   );
 
@@ -253,14 +267,13 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
     setExpandedRuns(false);
   };
 
-  // 🔥 NEW: Handle min views change - regenerate pattern when changed
+  // Handle min views change - regenerate pattern when changed
   const handleMinViewsChange = (value: number) => {
     const newValue = Math.max(1, Math.floor(value));
     setMinViewsPerRun(newValue);
     setUseClonedPlan(false);
-    setSeed((current) => current + 1); // 🔥 Force regenerate pattern
+    setSeed((current) => current + 1);
 
-    // Also update backend
     const backendUrl = import.meta.env.VITE_BACKEND_URL || "https://backend-y30y.onrender.com";
     fetch(`${backendUrl}/api/settings/min-views`, {
       method: "POST",
@@ -278,9 +291,56 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
     { mode: "custom", label: "Custom", hours: customHours },
   ];
 
-  // 🔥 Calculate estimated runs and views per run for display
+  // Calculate estimated runs and views per run for display
   const estimatedRunCount = safePlan.runs.length;
   const averageViewsPerRun = estimatedRunCount > 0 ? Math.round(totalViews / estimatedRunCount) : 0;
+
+  // 🔥 NEW: Calculate price details
+  const priceDetails = useMemo(() => {
+    const selectedBundle = bundles.find(b => b.id === selectedBundleId);
+    const selectedApi = apis.find(a => a.id === selectedApiId);
+    
+    if (!selectedBundle || !selectedApi || safePlan.runs.length === 0) {
+      return null;
+    }
+    
+    const viewsService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.views);
+    const likesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.likes);
+    const sharesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.shares);
+    const savesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.saves);
+    
+    const totalViewsQty = safePlan.runs.reduce((sum, run) => sum + (run.views || 0), 0);
+    const totalLikesQty = safePlan.runs.reduce((sum, run) => sum + (run.likes || 0), 0);
+    const totalSharesQty = safePlan.runs.reduce((sum, run) => sum + (run.shares || 0), 0);
+    const totalSavesQty = safePlan.runs.reduce((sum, run) => sum + (run.saves || 0), 0);
+    
+    const viewsRate = parseFloat(viewsService?.rate || "0");
+    const likesRate = parseFloat(likesService?.rate || "0");
+    const sharesRate = parseFloat(sharesService?.rate || "0");
+    const savesRate = parseFloat(savesService?.rate || "0");
+    
+    const viewsPricePerLink = (totalViewsQty / 1000) * viewsRate;
+    const likesPricePerLink = includeLikes ? (totalLikesQty / 1000) * likesRate : 0;
+    const sharesPricePerLink = includeShares ? (totalSharesQty / 1000) * sharesRate : 0;
+    const savesPricePerLink = includeSaves ? (totalSavesQty / 1000) * savesRate : 0;
+    
+    const pricePerLink = viewsPricePerLink + likesPricePerLink + sharesPricePerLink + savesPricePerLink;
+    const totalPrice = pricePerLink * Math.max(1, linkCount);
+    
+    return {
+      totalViewsQty,
+      totalLikesQty,
+      totalSharesQty,
+      totalSavesQty,
+      viewsPricePerLink,
+      likesPricePerLink,
+      sharesPricePerLink,
+      savesPricePerLink,
+      pricePerLink,
+      totalPrice,
+      linkCount: Math.max(1, linkCount),
+    };
+  }, [selectedBundleId, selectedApiId, safePlan.runs, bundles, apis, includeLikes, includeShares, includeSaves, linkCount]);
 
   return (
     <div className="mx-auto max-w-7xl space-y-2 px-3 py-3">
@@ -342,7 +402,15 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
 
             {/* Bulk Links */}
             <div className="mb-2">
-              <label className="text-[10px] text-gray-500 mb-1 block">Bulk Links (one per line)</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[10px] text-gray-500">Bulk Links (one per line)</label>
+                {/* 🔥 NEW: Show link count badge */}
+                {linkCount > 1 && (
+                  <span className="text-[9px] bg-yellow-500/20 text-yellow-300 px-1.5 py-0.5 rounded-full">
+                    {linkCount} links
+                  </span>
+                )}
+              </div>
               <textarea
                 value={bulkLinks}
                 onChange={(e) => setBulkLinks(e.target.value)}
@@ -386,7 +454,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
             </div>
           </div>
 
-          {/* 🔥 NEW: Minimum Views Per Run Settings Block */}
+          {/* Minimum Views Per Run Settings Block */}
           <div className="rounded-xl border border-blue-500/30 bg-gradient-to-br from-blue-900/20 to-black p-3">
             <h3 className="text-xs font-semibold text-blue-400 mb-2 flex items-center gap-2">
               <span>⚙️</span> Global Run Settings
@@ -623,91 +691,95 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
             </div>
           </div>
 
-          {/* Price Calculator - Compact Horizontal */}
-          {selectedBundleId && safePlan.runs.length > 0 && (
-            <div className="rounded-lg border border-yellow-500/30 bg-gradient-to-br from-yellow-500/5 to-black p-2">
-              <div className="flex items-center justify-between gap-2 flex-wrap">
-                <span className="text-xs font-semibold text-yellow-400">💰</span>
-                
-                {/* Price Items */}
-                <div className="flex items-center gap-1 flex-wrap flex-1">
-                  {(() => {
-                    const selectedBundle = bundles.find(b => b.id === selectedBundleId);
-                    const selectedApi = apis.find(a => a.id === selectedApiId);
-                    
-                    if (!selectedBundle || !selectedApi) return null;
-                    
-                    const viewsService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.views);
-                    const likesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.likes);
-                    const sharesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.shares);
-                    const savesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.saves);
-                    
-                    const totalViewsQty = safePlan.runs.reduce((sum, run) => sum + (run.views || 0), 0);
-                    const totalLikesQty = safePlan.runs.reduce((sum, run) => sum + (run.likes || 0), 0);
-                    const totalSharesQty = safePlan.runs.reduce((sum, run) => sum + (run.shares || 0), 0);
-                    const totalSavesQty = safePlan.runs.reduce((sum, run) => sum + (run.saves || 0), 0);
-                    
-                    const viewsRate = parseFloat(viewsService?.rate || "0");
-                    const likesRate = parseFloat(likesService?.rate || "0");
-                    const sharesRate = parseFloat(sharesService?.rate || "0");
-                    const savesRate = parseFloat(savesService?.rate || "0");
-                    
-                    const viewsPrice = (totalViewsQty / 1000) * viewsRate;
-                    const likesPrice = includeLikes ? (totalLikesQty / 1000) * likesRate : 0;
-                    const sharesPrice = includeShares ? (totalSharesQty / 1000) * sharesRate : 0;
-                    const savesPrice = includeSaves ? (totalSavesQty / 1000) * savesRate : 0;
-                    
-                    return (
-                      <>
-                        <span className="text-[10px] text-gray-400">👁️{(totalViewsQty/1000).toFixed(0)}k=₹{viewsPrice.toFixed(0)}</span>
-                        {includeLikes && totalLikesQty > 0 && (
-                          <span className="text-[10px] text-gray-400">❤️{(totalLikesQty/1000).toFixed(1)}k=₹{likesPrice.toFixed(0)}</span>
-                        )}
-                        {includeShares && totalSharesQty > 0 && (
-                          <span className="text-[10px] text-gray-400">🔄{(totalSharesQty/1000).toFixed(1)}k=₹{sharesPrice.toFixed(0)}</span>
-                        )}
-                        {includeSaves && totalSavesQty > 0 && (
-                          <span className="text-[10px] text-gray-400">💾{(totalSavesQty/1000).toFixed(1)}k=₹{savesPrice.toFixed(0)}</span>
-                        )}
-                      </>
-                    );
-                  })()}
+          {/* 🔥 UPDATED: Price Calculator - Now supports bulk orders */}
+          {selectedBundleId && safePlan.runs.length > 0 && priceDetails && (
+            <div className="rounded-lg border border-yellow-500/30 bg-gradient-to-br from-yellow-500/5 to-black p-3">
+              {/* Header with link count */}
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-semibold text-yellow-400">💰 Price Calculator</span>
+                  {priceDetails.linkCount > 1 && (
+                    <span className="text-[9px] bg-yellow-500/30 text-yellow-200 px-1.5 py-0.5 rounded-full">
+                      {priceDetails.linkCount} links
+                    </span>
+                  )}
                 </div>
-                
-                {/* Total */}
-                <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2 py-1">
-                  <span className="text-sm font-bold text-yellow-400">
-                    ₹{(() => {
-                      const selectedBundle = bundles.find(b => b.id === selectedBundleId);
-                      const selectedApi = apis.find(a => a.id === selectedApiId);
-                      
-                      if (!selectedBundle || !selectedApi) return "0";
-                      
-                      const viewsService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.views);
-                      const likesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.likes);
-                      const sharesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.shares);
-                      const savesService = selectedApi.services.find(s => s.id === selectedBundle.serviceIds.saves);
-                      
-                      const totalViewsQty = safePlan.runs.reduce((sum, run) => sum + (run.views || 0), 0);
-                      const totalLikesQty = safePlan.runs.reduce((sum, run) => sum + (run.likes || 0), 0);
-                      const totalSharesQty = safePlan.runs.reduce((sum, run) => sum + (run.shares || 0), 0);
-                      const totalSavesQty = safePlan.runs.reduce((sum, run) => sum + (run.saves || 0), 0);
-                      
-                      const viewsRate = parseFloat(viewsService?.rate || "0");
-                      const likesRate = parseFloat(likesService?.rate || "0");
-                      const sharesRate = parseFloat(sharesService?.rate || "0");
-                      const savesRate = parseFloat(savesService?.rate || "0");
-                      
-                      const viewsPrice = (totalViewsQty / 1000) * viewsRate;
-                      const likesPrice = includeLikes ? (totalLikesQty / 1000) * likesRate : 0;
-                      const sharesPrice = includeShares ? (totalSharesQty / 1000) * sharesRate : 0;
-                      const savesPrice = includeSaves ? (totalSavesQty / 1000) * savesRate : 0;
-                      
-                      return (viewsPrice + likesPrice + sharesPrice + savesPrice).toFixed(0);
-                    })()}
+              </div>
+
+              {/* Per-link breakdown */}
+              <div className="flex items-center gap-2 flex-wrap text-[10px] mb-2">
+                <span className="text-gray-500">Per link:</span>
+                <span className="text-gray-400">
+                  👁️ {(priceDetails.totalViewsQty/1000).toFixed(0)}k = ₹{priceDetails.viewsPricePerLink.toFixed(0)}
+                </span>
+                {includeLikes && priceDetails.totalLikesQty > 0 && (
+                  <span className="text-gray-400">
+                    ❤️ {(priceDetails.totalLikesQty/1000).toFixed(1)}k = ₹{priceDetails.likesPricePerLink.toFixed(0)}
+                  </span>
+                )}
+                {includeShares && priceDetails.totalSharesQty > 0 && (
+                  <span className="text-gray-400">
+                    🔄 {(priceDetails.totalSharesQty/1000).toFixed(1)}k = ₹{priceDetails.sharesPricePerLink.toFixed(0)}
+                  </span>
+                )}
+                {includeSaves && priceDetails.totalSavesQty > 0 && (
+                  <span className="text-gray-400">
+                    💾 {(priceDetails.totalSavesQty/1000).toFixed(1)}k = ₹{priceDetails.savesPricePerLink.toFixed(0)}
+                  </span>
+                )}
+              </div>
+
+              {/* Total section */}
+              <div className="flex items-center justify-between pt-2 border-t border-yellow-500/20">
+                <div className="text-[10px] text-gray-400">
+                  {priceDetails.linkCount > 1 ? (
+                    <span>
+                      ₹{priceDetails.pricePerLink.toFixed(0)} × {priceDetails.linkCount} links
+                    </span>
+                  ) : (
+                    <span>Total</span>
+                  )}
+                </div>
+                <div className="rounded-md border border-yellow-500/40 bg-yellow-500/10 px-3 py-1">
+                  <span className="text-lg font-bold text-yellow-400">
+                    ₹{priceDetails.totalPrice.toFixed(0)}
                   </span>
                 </div>
               </div>
+
+              {/* Bulk order summary */}
+              {priceDetails.linkCount > 1 && (
+                <div className="mt-2 pt-2 border-t border-yellow-500/10">
+                  <div className="grid grid-cols-2 gap-2 text-[9px]">
+                    <div className="flex justify-between text-gray-500">
+                      <span>Total Views:</span>
+                      <span className="text-gray-400">{(priceDetails.totalViewsQty * priceDetails.linkCount / 1000).toFixed(0)}k</span>
+                    </div>
+                    {includeLikes && (
+                      <div className="flex justify-between text-gray-500">
+                        <span>Total Likes:</span>
+                        <span className="text-gray-400">{(priceDetails.totalLikesQty * priceDetails.linkCount / 1000).toFixed(1)}k</span>
+                      </div>
+                    )}
+                    {includeShares && (
+                      <div className="flex justify-between text-gray-500">
+                        <span>Total Shares:</span>
+                        <span className="text-gray-400">{(priceDetails.totalSharesQty * priceDetails.linkCount / 1000).toFixed(1)}k</span>
+                      </div>
+                    )}
+                    {includeSaves && (
+                      <div className="flex justify-between text-gray-500">
+                        <span>Total Saves:</span>
+                        <span className="text-gray-400">{(priceDetails.totalSavesQty * priceDetails.linkCount / 1000).toFixed(1)}k</span>
+                      </div>
+                    )}
+                    <div className="flex justify-between text-gray-500">
+                      <span>Total Runs:</span>
+                      <span className="text-gray-400">{estimatedRunCount * priceDetails.linkCount}</span>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -720,7 +792,7 @@ export function NewOrderPage({ apis, bundles, orders, prefillOrder, onCreateOrde
           {createSuccess && <span className="text-[10px] text-emerald-400">✅ {createSuccess}</span>}
           {!createError && !createSuccess && (
             <span className="text-[10px] text-gray-500">
-              Ready to deploy • {estimatedRunCount} runs • ~{averageViewsPerRun} views/run
+              Ready to deploy • {linkCount > 1 ? `${linkCount} links • ` : ""}{estimatedRunCount} runs{linkCount > 1 ? "/link" : ""} • ~{averageViewsPerRun} views/run
             </span>
           )}
         </div>
